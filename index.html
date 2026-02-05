@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Анализ поступления</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="src/styles/main.css">
+  <!-- CDN: Chart.js and jsPDF -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+</head>
+<body class="app">
+  <header class="app__header header">
+    <h1 class="header__title">Анализ поступления — демо</h1>
+  </header>
+
+  <main class="app__content content">
+    <section class="content__controls controls">
+      <div class="controls__row">
+        <button class="controls__btn controls__btn--generate" id="generate-btn">Сгенерировать списки</button>
+        <button class="controls__btn" id="clear-db">Очистить БД</button>
+        <button class="controls__btn controls__btn--export" id="export-csv">Экспорт CSV</button>
+        <label class="controls__file-label" title="Загрузить CSV и сохранить автоматически">
+          <input type="file" id="import-csv" accept=".csv" class="controls__file" />
+          <span>Импорт CSV</span>
+        </label>
+        <input id="search-id" class="controls__search" placeholder="Поиск по ID" />
+      </div>
+
+      <div class="controls__days" role="tablist">
+        <button class="controls__day" data-day="2025-08-01">01.08</button>
+        <button class="controls__day" data-day="2025-08-02">02.08</button>
+        <button class="controls__day" data-day="2025-08-03">03.08</button>
+        <button class="controls__day" data-day="2025-08-04">04.08</button>
+      </div>
+
+      <div class="controls__actions">
+        <button class="controls__btn" id="report-btn">Сформировать PDF отчет</button>
+      </div>
+
+      <div class="controls__status" id="status">Статус: готов</div>
+    </section>
+
+    <section class="content__panels panels">
+      <aside class="panels__sidebar sidebar">
+        <h2 class="sidebar__title">Программы</h2>
+        <ul class="sidebar__list">
+          <li><button class="sidebar__item" data-program="">Все</button></li>
+          <li><button class="sidebar__item" data-program="PM">ПМ (40)</button></li>
+          <li><button class="sidebar__item" data-program="IVT">ИВТ (50)</button></li>
+          <li><button class="sidebar__item" data-program="ITSS">ИТСС (30)</button></li>
+          <li><button class="sidebar__item" data-program="IB">ИБ (20)</button></li>
+        </ul>
+      </aside>
+
+      <section class="panels__main main-panel">
+        <div class="panel__header">
+          <h2 class="panel__title">Список абитуриентов — <span id="panel-program">Все</span></h2>
+          <div class="panel__filters">
+            <label>Фильтр: <select id="filter-consent"><option value="all">Все</option><option value="yes">Согласие</option><option value="no">Без согласия</option></select></label>
+            <label>Сортировка: <select id="sort-by"><option value="sum-desc">Сумма ↓</option><option value="sum-asc">Сумма ↑</option><option value="id">ID</option></select></label>
+          </div>
+        </div>
+
+        <div class="panel__body">
+          <table class="table table--applicants" id="applicants-table">
+            <thead>
+              <tr><th>ID</th><th>Программа</th><th>Приоритет</th><th>Согласие</th><th>Сумма</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="panel__footer">
+          <div id="stats"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="app__footer footer">&copy; Демонстрация</footer>
+
+  <script src="src/js/generator.js"></script>
+  <script src="src/js/db.js"></script>
+  <script src="src/js/pdf.js"></script>
+  <script src="src/js/main.js"></script>
+</body>
+</html>
