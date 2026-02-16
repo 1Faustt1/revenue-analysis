@@ -1,102 +1,156 @@
-/* pdf.js — формирование PDF отчёта с использованием jsPDF и Chart.js (Canvas toDataURL)
-   Экспорт: createReport(day, generatedLists)
-*/
-(async function(global){
-  // Create a small canvas to draw chart; returns dataURL
-  function drawLineChart(labels, datasets){
-    return new Promise((res)=>{
-      const canvas = document.createElement('canvas'); canvas.width=800; canvas.height=400;
-      const ctx = canvas.getContext('2d');
+﻿(function (global) {
+  function drawChart(labels, datasets) {
+    return new Promise(function (resolve) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1000;
+      canvas.height = 420;
+      const ctx = canvas.getContext("2d");
+
       const chart = new Chart(ctx, {
-        type: 'line', data: {labels, datasets},
-        options:{plugins:{legend:{display:true}},responsive:false,interaction:{mode:'index'}}
+        type: "line",
+        data: {
+          labels: labels,
+          datasets: datasets
+        },
+        options: {
+          responsive: false,
+          animation: false,
+          plugins: { legend: { display: true } },
+          scales: {
+            y: { beginAtZero: true }
+          }
+        }
       });
-      // give Chart some time to render then destroy it
-      setTimeout(()=>{ const dataUrl = canvas.toDataURL('image/png'); chart.destroy(); res(dataUrl); }, 450);
+
+      setTimeout(function () {
+        const img = canvas.toDataURL("image/png");
+        chart.destroy();
+        resolve(img);
+      }, 80);
     });
   }
 
-  function createTextImage(title, blocks){
-    const canvas = document.createElement('canvas');
-    const width = 792; // about A4 portrait at 72dpi
-    const lineHeight = 20;
-    // estimate height
-    let linesCount = 2; // header + spacing
-    blocks.forEach(b=> linesCount += (b.lines ? b.lines.length : 1) + 1);
-    const height = Math.max(300, linesCount * lineHeight + 80);
-    canvas.width = width; canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    // background
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,canvas.width,canvas.height);
-    // title
-    ctx.fillStyle = '#0b1220'; ctx.font = 'bold 18px Inter, Roboto, sans-serif';
-    ctx.fillText(title, 20, 30);
-    // content
-    ctx.fillStyle = '#10203b'; ctx.font = '14px Inter, Roboto, sans-serif';
-    let y = 60;
-    blocks.forEach(block=>{
-      if(block.title){ ctx.font = '600 14px Inter, Roboto, sans-serif'; ctx.fillText(block.title, 20, y); y += lineHeight; }
-      ctx.font = '14px Inter, Roboto, sans-serif';
-      if(block.lines){
-        block.lines.forEach(l=>{ ctx.fillText(l, 30, y); y += lineHeight; });
-      }
-      y += 6;
+  function blockImage(title, lines) {
+    const canvas = document.createElement("canvas");
+    const width = 1200;
+    const lineHeight = 26;
+    const top = 50;
+    const totalHeight = Math.max(420, top + (lines.length + 2) * lineHeight);
+    canvas.width = width;
+    canvas.height = totalHeight;
+
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, totalHeight);
+    ctx.fillStyle = "#111827";
+
+    ctx.font = "bold 30px Arial";
+    ctx.fillText(title, 30, 40);
+
+    ctx.font = "18px Arial";
+    let y = top + 20;
+    lines.forEach(function (line) {
+      ctx.fillText(line, 30, y);
+      y += lineHeight;
     });
-    return canvas.toDataURL('image/png');
+
+    return canvas.toDataURL("image/png");
   }
 
-  async function createReport(day, generatedLists, admissions){
+  function buildStatsLines(stats) {
+    const names = { PM: "ПМ", IVT: "ИВТ", ITSS: "ИТСС", IB: "ИБ" };
+    const rows = [];
+
+    rows.push("Статистика по образовательным программам:");
+    rows.push("ОП | Всего заявлений | Мест | 1 пр. | 2 пр. | 3 пр. | 4 пр. | Зач.1 | Зач.2 | Зач.3 | Зач.4");
+
+    ["PM", "IVT", "ITSS", "IB"].forEach(function (p) {
+      const s = stats[p];
+      const a = s.appliedByPriority;
+      const e = s.enrolledByPriority;
+      rows.push(
+        names[p] +
+          " | " + s.totalApplications +
+          " | " + s.seats +
+          " | " + a[0] +
+          " | " + a[1] +
+          " | " + a[2] +
+          " | " + a[3] +
+          " | " + e[0] +
+          " | " + e[1] +
+          " | " + e[2] +
+          " | " + e[3]
+      );
+    });
+
+    return rows;
+  }
+
+  async function createReport(day, allListsByDay) {
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({orientation:'portrait',unit:'pt',format:'a4'});
-
-    // Header + passing scores + admitted lists rendered via Canvas (preserves UTF-8/Cyrillic)
-    const blocks = [];
     const now = new Date();
-    blocks.push({title: `Отчёт — ${day}` , lines: [`Сформирован: ${now.toLocaleString()}`]});
 
-    const passLines = [];
-    Object.keys(admissions.passing || {}).forEach(p=> passLines.push(`${p}: ${admissions.passing[p]}`));
-    blocks.push({title: 'Проходные баллы:', lines: passLines});
+    const current = DB.computeAdmissionsFromAllRows(allListsByDay, day);
 
-    Object.keys(admissions.admitted || {}).forEach(p=>{
-      const list = admissions.admitted[p] || [];
-      const lines = list.map(a=> `${a.id} — ${a.sum}`);
-      blocks.push({title: `Зачисленные (${p}):`, lines: lines.length ? lines : ['(пусто)']});
+    const summaryLines = [];
+    summaryLines.push("Дата/время формирования: " + now.toLocaleString("ru-RU"));
+    summaryLines.push("Отчет по дню приемной кампании: " + day);
+    summaryLines.push("");
+    summaryLines.push("Проходные баллы:");
+    ["PM", "IVT", "ITSS", "IB"].forEach(function (p) {
+      summaryLines.push(p + ": " + current.passing[p]);
     });
 
-    const imgHeader = createTextImage(`Отчёт — ${day}`, blocks);
-    // load image to measure natural size and compute proper height for given width
-    const headerImgEl = new Image();
-    headerImgEl.src = imgHeader;
-    await new Promise((r)=> { headerImgEl.onload = r; headerImgEl.onerror = r; });
-    const w = 555;
-    const h = headerImgEl.naturalWidth ? (w * (headerImgEl.naturalHeight / headerImgEl.naturalWidth)) : 150;
-    doc.addImage(imgHeader, 'PNG', 20, 20, w, h);
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
 
-    // Build dynamic passing data across all generated days
-    const dayKeys = Object.keys(generatedLists).sort();
-    const labels = dayKeys.map(d => { const dt = new Date(d); return dt.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'}) });
-    const codes = ['PM','IVT','ITSS','IB'];
-    const passingByProgram = {PM:[],IVT:[],ITSS:[],IB:[]};
-    for(const dKey of dayKeys){
-      const out = await DB.computeAdmissionsFromLists(generatedLists, dKey);
-      codes.forEach(c=>{
-        const v = out.passing[c];
-        passingByProgram[c].push(v === 'НЕДОБОР' ? 0 : (Number(v) || 0));
+    const summaryImg = blockImage("Анализ поступления: отчет", summaryLines);
+    doc.addImage(summaryImg, "PNG", 20, 20, 555, 360);
+
+    const days = ["2025-08-01", "2025-08-02", "2025-08-03", "2025-08-04"];
+    const series = { PM: [], IVT: [], ITSS: [], IB: [] };
+
+    days.forEach(function (d) {
+      const out = DB.computeAdmissionsFromAllRows(allListsByDay, d);
+      ["PM", "IVT", "ITSS", "IB"].forEach(function (p) {
+        const val = out.passing[p];
+        series[p].push(val === "НЕДОБОР" ? 0 : Number(val));
       });
-    }
+    });
 
-    const palette = ['#f94144','#f3722c','#577590','#4caf50'];
-    const datasets = codes.map((c,idx)=>({label:c, data:passingByProgram[c], borderColor:palette[idx], fill:false}));
+    const datasets = [
+      { label: "ПМ", data: series.PM, borderColor: "#be123c", fill: false },
+      { label: "ИВТ", data: series.IVT, borderColor: "#1d4ed8", fill: false },
+      { label: "ИТСС", data: series.ITSS, borderColor: "#0f766e", fill: false },
+      { label: "ИБ", data: series.IB, borderColor: "#854d0e", fill: false }
+    ];
 
-    // produce chart image
-    const chartImg = await drawLineChart(labels, datasets);
+    const chartImg = await drawChart(["01.08", "02.08", "03.08", "04.08"], datasets);
     doc.addPage();
-    doc.addImage(chartImg,'PNG',40,60,500,220);
+    doc.text("Динамика проходных баллов (за 4 дня)", 30, 36);
+    doc.addImage(chartImg, "PNG", 30, 50, 535, 225);
 
-    // Save
-    doc.save(`report-${day}.pdf`);
+    const statsLines = buildStatsLines(current.stats);
+    const statsImg = blockImage("Статистика по ОП", statsLines);
+    doc.addImage(statsImg, "PNG", 30, 290, 535, 220);
+
+    ["PM", "IVT", "ITSS", "IB"].forEach(function (p) {
+      doc.addPage();
+      const lines = [];
+      lines.push("Список зачисленных на программу " + p + ":");
+      const admitted = current.admitted[p] || [];
+      if (!admitted.length) {
+        lines.push("НЕТ ЗАЧИСЛЕННЫХ");
+      } else {
+        admitted.forEach(function (a, i) {
+          lines.push(String(i + 1).padStart(2, "0") + ". ID " + a.id + " | Сумма: " + a.sum + " | Приоритет: " + a.priority);
+        });
+      }
+      const img = blockImage("Зачисленные - " + p, lines);
+      doc.addImage(img, "PNG", 20, 20, 555, 780);
+    });
+
+    doc.save("report-" + day + ".pdf");
   }
 
-  global.Report = { createReport };
+  global.Report = { createReport: createReport };
 })(window);

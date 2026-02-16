@@ -1,315 +1,446 @@
-/* main.js — свяжем UI, генератор и БД
-   - Комментарии к логике внутри
-*/
-(function(){
-  // Cache UI elements
-  const genBtn = document.getElementById('generate-btn');
-  const clearBtn = document.getElementById('clear-db');
-  const exportBtn = document.getElementById('export-csv');
-  const importInput = document.getElementById('import-csv');
-  const searchInput = document.getElementById('search-id');
-  const dayButtons = Array.from(document.querySelectorAll('.controls__day'));
-  const reportBtn = document.getElementById('report-btn');
-  const sidebarItems = Array.from(document.querySelectorAll('.sidebar__item'));
-  const panelProgram = document.getElementById('panel-program');
-  const tableBody = document.querySelector('#applicants-table tbody');
-  const filterConsent = document.getElementById('filter-consent');
-  const sortBy = document.getElementById('sort-by');
+﻿(function () {
+  const daySelect = document.getElementById("day-select");
+  const programSelect = document.getElementById("program-select");
+  const consentFilter = document.getElementById("consent-filter");
+  const searchInput = document.getElementById("search-id");
+  const sortSelect = document.getElementById("sort-select");
 
-  let generated = {}; // generated lists per day
-  let selectedDay = '2025-08-01';
-  let selectedProgram = null; // null => all
+  const generateBtn = document.getElementById("generate-btn");
+  const loadDayBtn = document.getElementById("load-day-btn");
+  const clearDbBtn = document.getElementById("clear-db-btn");
+  const reportBtn = document.getElementById("report-btn");
+  const importInput = document.getElementById("import-csv");
 
-  // status helper
-  const statusEl = document.getElementById('status');
-  function setStatus(msg){ if(statusEl) statusEl.textContent = `Статус: ${msg}`; } 
-  setStatus('готов');
+  const statusEl = document.getElementById("status");
+  const summaryCards = document.getElementById("summary-cards");
+  const programTableBody = document.querySelector("#program-table tbody");
+  const cascadeTableBody = document.querySelector("#cascade-table tbody");
 
-  // UI helpers
-  function renderTable(rows){
-    tableBody.innerHTML = '';
-    rows.forEach(r=>{
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${r.id}</td><td>${r.program}</td><td>${r.priority}</td><td>${r.consent? 'Да':'Нет'}</td><td>${r.sum}</td>`;
-      tableBody.appendChild(tr);
-    });
+  const ORDER_DAYS = ["2025-08-01", "2025-08-02", "2025-08-03", "2025-08-04"];
+  const programName = { PM: "ПМ", IVT: "ИВТ", ITSS: "ИТСС", IB: "ИБ" };
+
+  let generatedLists = {};
+
+  function setStatus(text) {
+    statusEl.textContent = "Статус: " + text;
   }
 
-  // Build rows from generated lists (used when DB doesn't contain day data)
-  function buildRowsFromLists(day,program){
-    const lists = generated[day] || {};
-    let rows = [];
-    Object.keys(lists).forEach(p=>{
-      if(program && p!==program) return;
-      lists[p].forEach(item=> rows.push(Object.assign({program:p},item)));
-    });
-    return rows;
+  function getSelectedDay() {
+    return daySelect.value;
   }
 
-  // Apply filters, search, program filter and sorting to any rows array
-  function applyFiltersAndSort(rows, program){
-    let out = rows.slice();
-    // program filter (if provided)
-    if(program){ out = out.filter(r=> String(r.program) === String(program)); }
-    // filtering
-    const f = filterConsent.value;
-    if(f==='yes') out = out.filter(r=>r.consent);
-    if(f==='no') out = out.filter(r=>!r.consent);
-    // search by ID
-    const q = (searchInput && searchInput.value.trim());
-    if(q) out = out.filter(r=> String(r.id).includes(q));
-    // sorting
-    const s = sortBy.value;
-    if(s==='sum-desc') out.sort((a,b)=>b.sum-a.sum);
-    if(s==='sum-asc') out.sort((a,b)=>a.sum-b.sum);
-    if(s==='id') out.sort((a,b)=>a.id-b.id);
+  function rowToViewModel(row) {
+    return {
+      id: row.id,
+      day: row.day,
+      program: row.program,
+      priority: row.priority,
+      consent: row.consent,
+      physics: row.physics,
+      rus: row.rus,
+      math: row.math,
+      indiv: row.indiv,
+      sum: row.sum
+    };
+  }
+
+  function flattenLists(dayLists, day) {
+    const out = [];
+    ["PM", "IVT", "ITSS", "IB"].forEach(function (p) {
+      (dayLists[p] || []).forEach(function (x) {
+        out.push(Object.assign({ day: day, program: p }, x));
+      });
+    });
     return out;
   }
 
-  // Render table for currently selected day (prefer DB data if present)
-  async function renderSelectedDay(program=null){
-    const day = selectedDay;
-    try{
-      const all = await DB.getAll();
-      const dbRows = all.filter(x=> x.day === day).map(x=> Object.assign({program:x.program}, x));
-      let rows = dbRows.length ? dbRows : buildRowsFromLists(day, program);
-      rows = applyFiltersAndSort(rows, program);
-      renderTable(rows);
-    }catch(err){
-      // fallback to generated lists
-      const rows = applyFiltersAndSort(buildRowsFromLists(day, program));
-      renderTable(rows);
+  async function sourceRowsForDay(day) {
+    const rows = await DB.getByDay(day);
+    if (rows.length) return rows.map(rowToViewModel);
+
+    if (generatedLists[day]) {
+      return flattenLists(generatedLists[day], day).map(rowToViewModel);
     }
+
+    return [];
   }
 
-  // Export table to CSV (semicolon-separated for Excel compatibility)
-  async function exportCSV(){
-    // prefer DB rows for the selected day if available
-    let rows = [];
-    try{
-      const all = await DB.getAll();
-      const dbRows = all.filter(x=> x.day === selectedDay).map(x=> Object.assign({program:x.program}, x));
-      rows = dbRows.length ? dbRows : buildRowsFromLists(selectedDay, selectedProgram);
-    }catch(e){ rows = buildRowsFromLists(selectedDay, selectedProgram); }
+  function applyFilters(rows) {
+    const selectedProgram = programSelect.value;
+    const selectedConsent = consentFilter.value;
+    const query = searchInput.value.trim();
+    const sort = sortSelect.value;
 
-    if(!rows.length){ alert('Нет данных для экспорта'); return; }
-    const headers = ['ID','Program','Priority','Consent','Physics','Rus','Math','Indiv','Sum','Day'];
-    const sep = ';';
-    const lines = [];
-    // BOM for Excel UTF-8
-    lines.push('\uFEFF' + headers.join(sep));
-    rows.forEach(r=>{
-      const vals = [r.id, r.program, r.priority, r.consent ? 'Да' : 'Нет', r.physics, r.rus, r.math, r.indiv, r.sum, selectedDay];
-      // escape semicolons and quotes
-      const row = vals.map(v=> typeof v === 'string' ? `"${v.replace(/"/g,'""') }"` : v).join(sep);
-      lines.push(row);
+    let filtered = rows.slice();
+
+    if (selectedProgram !== "ALL") {
+      filtered = filtered.filter(function (r) { return r.program === selectedProgram; });
+    }
+
+    if (selectedConsent === "yes") {
+      filtered = filtered.filter(function (r) { return r.consent; });
+    }
+    if (selectedConsent === "no") {
+      filtered = filtered.filter(function (r) { return !r.consent; });
+    }
+
+    if (query) {
+      filtered = filtered.filter(function (r) { return String(r.id).includes(query); });
+    }
+
+    if (sort === "sum_desc") filtered.sort(function (a, b) { return b.sum - a.sum || a.id - b.id; });
+    if (sort === "sum_asc") filtered.sort(function (a, b) { return a.sum - b.sum || a.id - b.id; });
+    if (sort === "id_asc") filtered.sort(function (a, b) { return a.id - b.id; });
+
+    return filtered;
+  }
+
+  function renderProgramTable(rows) {
+    programTableBody.innerHTML = "";
+    rows.forEach(function (r) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + r.id + "</td>" +
+        "<td>" + programName[r.program] + "</td>" +
+        "<td>" + r.priority + "</td>" +
+        "<td>" + (r.consent ? "Да" : "Нет") + "</td>" +
+        "<td>" + r.physics + "</td>" +
+        "<td>" + r.rus + "</td>" +
+        "<td>" + r.math + "</td>" +
+        "<td>" + r.indiv + "</td>" +
+        "<td>" + r.sum + "</td>";
+      programTableBody.appendChild(tr);
     });
-    const blob = new Blob([lines.join('\n')], {type: 'text/csv;charset=utf-8;'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `applicants-${selectedDay}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   }
 
-  // CSV parsing helpers
-  function parseLine(line, sep){
-    const res=[]; let cur=''; let inQuotes=false;
-    for(let i=0;i<line.length;i++){
-      const ch = line[i];
-      if(inQuotes){
-        if(ch === '"'){
-          if(line[i+1] === '"'){ cur += '"'; i++; } else { inQuotes = false; }
-        } else { cur += ch; }
-      } else {
-        if(ch === '"'){ inQuotes = true; }
-        else if(ch === sep){ res.push(cur); cur=''; }
-        else { cur += ch; }
+  function renderCascadeTable(rows) {
+    cascadeTableBody.innerHTML = "";
+
+    const byId = new Map();
+    rows.forEach(function (r) {
+      if (!byId.has(r.id)) {
+        byId.set(r.id, { id: r.id, consent: r.consent, sum: r.sum, apps: [] });
       }
-    }
-    res.push(cur);
-    return res.map(s=> s.trim());
+      const x = byId.get(r.id);
+      x.consent = x.consent || r.consent;
+      x.sum = Math.max(x.sum, r.sum);
+      x.apps.push({ program: r.program, priority: r.priority });
+    });
+
+    const unified = Array.from(byId.values()).sort(function (a, b) {
+      return b.sum - a.sum || a.id - b.id;
+    });
+
+    unified.forEach(function (item) {
+      item.apps.sort(function (a, b) { return a.priority - b.priority; });
+      const cascade = item.apps.map(function (a) {
+        return programName[a.program] + "(" + a.priority + ")";
+      }).join(" > ");
+
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + item.id + "</td>" +
+        "<td>" + (item.consent ? "Да" : "Нет") + "</td>" +
+        "<td>" + item.sum + "</td>" +
+        "<td>" + cascade + "</td>";
+      cascadeTableBody.appendChild(tr);
+    });
   }
 
-  function parseCSV(text, sep=';'){
-    const lines = text.replace(/\r/g,'').split('\n').filter(l=>l.trim() !== '');
-    if(lines.length === 0) return [];
-    const header = parseLine(lines[0], sep).map(h=>h.replace(/^\uFEFF/, '').trim());
-    const data = [];
-    for(let i=1;i<lines.length;i++){
-      const fields = parseLine(lines[i], sep);
-      if(fields.length === 1 && fields[0] === '') continue;
-      const obj = {};
-      header.forEach((h, idx)=> obj[h] = (fields[idx] !== undefined ? fields[idx] : '').trim());
-      data.push(obj);
-    }
-    return data;
+  function renderSummary(dayRows, admission) {
+    const counts = { PM: 0, IVT: 0, ITSS: 0, IB: 0 };
+    dayRows.forEach(function (r) { counts[r.program] += 1; });
+
+    const blocks = [];
+    ["PM", "IVT", "ITSS", "IB"].forEach(function (p) {
+      const pass = admission.passing[p];
+      const admitted = (admission.admitted[p] || []).length;
+      const seats = DB.seatMap[p];
+      blocks.push(
+        "<article class='mini-card'>" +
+          "<h3>" + programName[p] + "</h3>" +
+          "<p>Заявлений: <b>" + counts[p] + "</b></p>" +
+          "<p>Мест: <b>" + seats + "</b></p>" +
+          "<p>Зачислено: <b>" + admitted + "</b></p>" +
+          "<p>Проходной: <b>" + pass + "</b></p>" +
+        "</article>"
+      );
+    });
+
+    summaryCards.innerHTML = blocks.join("");
   }
 
-  async function handleImportFile(file){
-    try{
-      setStatus(`Файл ${file.name} выбран. Чтение...`);
-      const text = await file.text();
-      // detect separator automatically
-      const firstLine = text.replace(/\r/g,'').split('\n').find(l=>l && l.trim());
-      const sep = firstLine && firstLine.indexOf(';') >= 0 ? ';' : (firstLine && firstLine.indexOf(',') >= 0 ? ',' : ';');
-      setStatus(`Парсер: разделитель "${sep}"`);
-      const rows = parseCSV(text, sep);
-      if(!rows || !rows.length){ setStatus('Ошибка: файл пуст или неверный формат'); alert('Файл пуст или неверный формат'); return; }
-      const daysMap = {};
-      rows.forEach(r=>{
-        const dayVal = r['Day'] || r['day'] || r['Дата'] || selectedDay;
-        let dayKey = dayVal;
-        if(dayKey && /^\d{2}\.\d{2}$/.test(dayKey)){
-          const [d,m] = dayKey.split('.'); dayKey = `2025-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  async function renderAll() {
+    const day = getSelectedDay();
+    const rows = await sourceRowsForDay(day);
+    const filtered = applyFilters(rows);
+
+    renderProgramTable(filtered);
+    renderCascadeTable(rows);
+
+    const lists = DB.rowsToProgramLists(rows);
+    const admission = DB.computeFromLists(lists);
+    renderSummary(rows, admission);
+  }
+
+  function csvRowValue(raw) {
+    const x = (raw || "").trim();
+    return x.replace(/^"|"$/g, "").replace(/""/g, "\"");
+  }
+
+  function parseCsv(text) {
+    const normalized = text.replace(/\r/g, "");
+    const lines = normalized.split("\n").filter(function (x) { return x.trim().length > 0; });
+    if (!lines.length) return [];
+
+    const sep = lines[0].includes(";") ? ";" : ",";
+
+    function splitQuoted(line) {
+      const out = [];
+      let cur = "";
+      let q = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (q) {
+          if (ch === '"') {
+            if (line[i + 1] === '"') {
+              cur += '"';
+              i += 1;
+            } else {
+              q = false;
+            }
+          } else {
+            cur += ch;
+          }
+        } else {
+          if (ch === '"') q = true;
+          else if (ch === sep) {
+            out.push(cur);
+            cur = "";
+          } else cur += ch;
         }
-        if(!dayKey) dayKey = selectedDay;
-        const programRaw = r['Program'] || r['program'] || r['Программа'] || r['OP'] || r['op'] || '';
-        const progMap = {'ПМ':'PM','ИВТ':'IVT','ИТСС':'ITSS','ИБ':'IB','PM':'PM','IVT':'IVT','ITSS':'ITSS','IB':'IB'};
-        const program = (progMap[programRaw] || programRaw || '').toString().trim();
-        if(!program) return;
-        if(!daysMap[dayKey]) daysMap[dayKey] = {PM:[],IVT:[],ITSS:[],IB:[]};
-        const id = Number((r['ID'] || r['Id'] || r['id'] || '').toString().replace(/\D/g,'')) || 0;
-        const physics = Number(r['Physics'] || r['physics'] || r['Физика'] || r['phys'] || 0);
-        const rus = Number(r['Rus'] || r['rus'] || r['Рус'] || r['ru'] || 0);
-        const math = Number(r['Math'] || r['math'] || r['Математика'] || r['maths'] || 0);
-        const indiv = Number(r['Indiv'] || r['indiv'] || r['Индив'] || r['ind'] || 0);
-        const sumVal = Number(r['Sum'] || r['sum'] || r['Сумма'] || 0);
-        const sum = sumVal || (physics + rus + math + indiv);
-        const priority = Number(r['Priority'] || r['priority'] || r['Приоритет'] || 1) || 1;
-        const consentRaw = (r['Consent'] || r['consent'] || r['Согласие'] || '').toString();
-        const consent = /^(y|yes|да|true|1|Да)$/i.test(consentRaw.trim());
-        daysMap[dayKey][program].push({id, consent, priority, physics, rus, math, indiv, sum});
+      }
+      out.push(cur);
+      return out;
+    }
+
+    const header = splitQuoted(lines[0]).map(function (h) { return csvRowValue(h).replace(/^\uFEFF/, ""); });
+    const objects = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const fields = splitQuoted(lines[i]);
+      const obj = {};
+      for (let j = 0; j < header.length; j++) {
+        obj[header[j]] = csvRowValue(fields[j] || "");
+      }
+      objects.push(obj);
+    }
+
+    return objects;
+  }
+
+  async function importCsvFile(file) {
+    const text = await file.text();
+    const rows = parseCsv(text);
+    if (!rows.length) {
+      setStatus("CSV пустой или поврежден");
+      return;
+    }
+
+    const byDay = {};
+    rows.forEach(function (r) {
+      const day = r.Day || r.day || r.date || getSelectedDay();
+      const rawProgram = (r.Program || r.program || r.OP || r.op || "").toUpperCase();
+      const p = rawProgram === "ПМ" ? "PM" : rawProgram === "ИВТ" ? "IVT" : rawProgram === "ИТСС" ? "ITSS" : rawProgram === "ИБ" ? "IB" : rawProgram;
+      if (!["PM", "IVT", "ITSS", "IB"].includes(p)) return;
+
+      if (!byDay[day]) byDay[day] = { PM: [], IVT: [], ITSS: [], IB: [] };
+      byDay[day][p].push({
+        id: Number(r.ID || r.id),
+        consent: /^(1|true|yes|да)$/i.test(String(r.Consent || r.consent || "")),
+        priority: Number(r.Priority || r.priority || 1),
+        physics: Number(r.Physics || r.physics || 0),
+        rus: Number(r.Rus || r.rus || 0),
+        math: Number(r.Math || r.math || 0),
+        indiv: Number(r.Indiv || r.indiv || 0),
+        sum: Number(r.Sum || r.sum || 0)
+      });
+    });
+
+    for (const day of Object.keys(byDay)) {
+      await DB.updateFromLists(byDay[day], day);
+    }
+
+    setStatus("Импорт CSV завершен");
+    await renderAll();
+  }
+
+  function validateCounts(generated) {
+    const specs = Generator.getSpecs();
+    const report = [];
+
+    for (const day of ORDER_DAYS) {
+      const lists = generated[day];
+      const spec = specs[day];
+      if (!lists || !spec) continue;
+
+      const setByProgram = {};
+      ["PM", "IVT", "ITSS", "IB"].forEach(function (p) {
+        setByProgram[p] = new Set((lists[p] || []).map(function (x) { return x.id; }));
       });
 
-      const keys = Object.keys(daysMap);
-      if(!keys.length){ setStatus('Файл прочитан, но записей не обнаружено (проверьте заголовки).'); alert('Файл прочитан, но записей не обнаружено (проверьте заголовки).'); return; }
+      report.push(day + ":");
+      ["PM", "IVT", "ITSS", "IB"].forEach(function (p) {
+        const actual = setByProgram[p].size;
+        report.push("  " + p + " total=" + actual + " (ТЗ=" + spec.totals[p] + ")");
+      });
 
-      setStatus(`Начинается импорт ${keys.length} дней...`);
-      let totalPut = 0; let totalDel = 0; let totalTime = 0;
-      for(const dKey of keys){
-        const lists = daysMap[dKey];
-        const t0 = performance.now();
-        const res = await DB.updateFromLists(lists, dKey);
-        const t1 = performance.now();
-        totalPut += res.put; totalDel += res.deleted; totalTime += (t1-t0);
-        setStatus(`Импорт для ${dKey}: добавлено/обновлено ${res.put}, удалено ${res.deleted}`);
+      function inter(a, b) {
+        let n = 0;
+        setByProgram[a].forEach(function (id) { if (setByProgram[b].has(id)) n += 1; });
+        return n;
       }
 
-      setStatus(`Импорт завершён: добавлено/обновлено ${totalPut}, удалено ${totalDel}.`);
-      alert(`Импорт завершён: добавлено/обновлено ${totalPut}, удалено ${totalDel}.`);
-
-      const first = keys[0];
-      if(first){
-        selectedDay = first;
-        // highlight day button if exists
-        const b = document.querySelector(`.controls__day[data-day="${selectedDay}"]`);
-        if(b){
-          dayButtons.forEach(x=> x.removeAttribute('aria-selected'));
-          b.setAttribute('aria-selected','true');
-        }
+      function inter3(a, b, c) {
+        let n = 0;
+        setByProgram[a].forEach(function (id) {
+          if (setByProgram[b].has(id) && setByProgram[c].has(id)) n += 1;
+        });
+        return n;
       }
 
-      // Render from DB for the selected day
-      await renderSelectedDay(selectedProgram);
+      const p2 = spec.pair;
+      const p3 = spec.triple;
+      report.push(
+        "  Pair: PM-IVT=" + inter("PM", "IVT") + "(" + p2.PM_IVT + ")," +
+        " PM-ITSS=" + inter("PM", "ITSS") + "(" + p2.PM_ITSS + ")," +
+        " PM-IB=" + inter("PM", "IB") + "(" + p2.PM_IB + ")," +
+        " IVT-ITSS=" + inter("IVT", "ITSS") + "(" + p2.IVT_ITSS + ")," +
+        " IVT-IB=" + inter("IVT", "IB") + "(" + p2.IVT_IB + ")," +
+        " ITSS-IB=" + inter("ITSS", "IB") + "(" + p2.ITSS_IB + ")"
+      );
+      report.push(
+        "  Triple/quad: PM-IVT-ITSS=" + inter3("PM", "IVT", "ITSS") + "(" + p3.PM_IVT_ITSS + ")," +
+        " PM-IVT-IB=" + inter3("PM", "IVT", "IB") + "(" + p3.PM_IVT_IB + ")," +
+        " IVT-ITSS-IB=" + inter3("IVT", "ITSS", "IB") + "(" + p3.IVT_ITSS_IB + ")," +
+        " PM-ITSS-IB=" + inter3("PM", "ITSS", "IB") + "(" + p3.PM_ITSS_IB + ")"
+      );
+    }
 
-    }catch(err){ console.error(err); setStatus('Ошибка импорта: ' + (err && err.message || err)); alert('Ошибка импорта: ' + (err && err.message || err)); }
+    return report.join("\n");
   }
 
-  importInput && importInput.addEventListener('change', (e)=> {
-    const f = e.target.files && e.target.files[0];
-    if(!f) return;
-    handleImportFile(f);
-    e.target.value = '';
-  });
+  async function handleGenerate() {
+    setStatus("Генерация данных...");
+    generatedLists = Generator.generateAll();
 
-  // Event handlers
-  genBtn.addEventListener('click', async ()=>{
-    setStatus('Генерация списков...');
-    generated = Generator.generateAll();
-    setStatus('Списки сгенерированы. Сохраняем в БД...');
-    // automatically save generated lists for all days to DB
-    let totalPut = 0; let totalDel = 0;
-    const dayKeys = Object.keys(generated);
-    for(const d of dayKeys){
-      const t0 = performance.now();
-      const res = await DB.updateFromLists(generated[d], d);
-      const t1 = performance.now();
-      totalPut += res.put; totalDel += res.deleted;
-      console.log(`Saved ${d}: put=${res.put}, del=${res.deleted}, time=${(t1-t0).toFixed(1)}ms`);
+    const report = validateCounts(generatedLists);
+    console.log(report);
+
+    setStatus("Списки сгенерированы. Сначала выберите день и нажмите 'Загрузить выбранный день в БД'.");
+    await renderAll();
+  }
+
+  async function handleLoadDay() {
+    const day = getSelectedDay();
+    if (!generatedLists[day]) {
+      setStatus("Для выбранного дня нет данных. Сначала выполните генерацию или импорт CSV.");
+      return;
     }
-    setStatus(`Генерация и сохранение завершены: put=${totalPut}, del=${totalDel}`);
-    alert(`Генерация завершена и списки сохранены в БД. Добавлено/обновлено: ${totalPut}, удалено: ${totalDel}`);
-    // render current day from DB
-    await renderSelectedDay(selectedProgram);
-  });
 
-  dayButtons.forEach(btn=> btn.addEventListener('click', async ()=>{
-    dayButtons.forEach(b=> b.removeAttribute('aria-selected'));
-    btn.setAttribute('aria-selected','true');
-    selectedDay = btn.dataset.day;
-    await renderSelectedDay(selectedProgram);
-  }));
+    const t0 = performance.now();
+    const result = await DB.updateFromLists(generatedLists[day], day);
+    const dt = performance.now() - t0;
 
-  sidebarItems.forEach(it=> it.addEventListener('click', async ()=>{
-    sidebarItems.forEach(x=> x.removeAttribute('aria-selected'));
-    it.setAttribute('aria-selected','true');
-    const prog = it.dataset.program;
-    selectedProgram = prog ? prog : null;
-    panelProgram.textContent = selectedProgram || 'Все';
-    await renderSelectedDay(selectedProgram);
-  }));
+    setStatus(
+      "День " + day + " загружен: добавлено/обновлено " + result.put +
+      ", удалено " + result.deleted +
+      ", время " + dt.toFixed(1) + " мс"
+    );
 
-  clearBtn.addEventListener('click', async ()=>{
-    if(!confirm('Очистить локальную БД?')) return;
+    await renderAll();
+  }
+
+  async function handleClearDb() {
+    const ok = confirm("Очистить локальную БД конкурсных списков?");
+    if (!ok) return;
     await DB.clearDB();
-    alert('БД очищена');
-    await renderSelectedDay(selectedProgram);
-  });
+    setStatus("БД очищена");
+    await renderAll();
+  }
 
+  async function handleReport() {
+    const allByDay = {};
 
-
-  reportBtn.addEventListener('click', async ()=>{
-    try{
-      setStatus('Формирование отчёта: подготовка данных...');
-      // If we have generated lists, use them; otherwise build lists from DB data
-      let listsSource = generated;
-      if(!generated || Object.keys(generated).length === 0){
-        const all = await DB.getAll();
-        const temp = {};
-        all.forEach(a=>{
-          const d = a.day || selectedDay;
-          if(!temp[d]) temp[d] = {PM:[],IVT:[],ITSS:[],IB:[]};
-          const item = { id: a.id, consent: a.consent, priority: a.priority, physics: a.physics, rus: a.rus, math: a.math, indiv: a.indiv, sum: a.sum };
-          if(!temp[d][a.program]) temp[d][a.program] = [];
-          temp[d][a.program].push(item);
-        });
-        listsSource = temp;
-      }
-
-      const admissions = await DB.computeAdmissionsForDay(selectedDay);
-      await Report.createReport(selectedDay, listsSource, admissions);
-      setStatus('Отчёт сформирован');
-    }catch(err){
-      console.error(err);
-      alert('Ошибка при формировании отчёта: ' + (err && err.message || err));
-      setStatus('Ошибка формирования отчёта');
+    for (const d of ORDER_DAYS) {
+      const rows = await sourceRowsForDay(d);
+      allByDay[d] = DB.rowsToProgramLists(rows);
     }
+
+    await Report.createReport(getSelectedDay(), allByDay);
+    setStatus("PDF отчет сформирован");
+  }
+
+  generateBtn.addEventListener("click", function () {
+    handleGenerate().catch(function (e) {
+      console.error(e);
+      setStatus("Ошибка генерации: " + e.message);
+    });
   });
 
-  exportBtn.addEventListener('click', exportCSV);
-  searchInput && searchInput.addEventListener('input', async ()=>{
-    await renderSelectedDay(selectedProgram);
+  loadDayBtn.addEventListener("click", function () {
+    handleLoadDay().catch(function (e) {
+      console.error(e);
+      setStatus("Ошибка загрузки в БД: " + e.message);
+    });
   });
 
-  filterConsent.addEventListener('change', async ()=>{
-    await renderSelectedDay(selectedProgram);
-  });
-  sortBy.addEventListener('change', async ()=>{
-    await renderSelectedDay(selectedProgram);
+  clearDbBtn.addEventListener("click", function () {
+    handleClearDb().catch(function (e) {
+      console.error(e);
+      setStatus("Ошибка очистки БД: " + e.message);
+    });
   });
 
-  // On load: pre-select first day
-  window.addEventListener('load', ()=>{
-    document.querySelector('.controls__day[data-day="2025-08-01"]').click();
-    const allBtn = document.querySelector('.sidebar__item[data-program=""]');
-    if(allBtn){ allBtn.click(); }
+  reportBtn.addEventListener("click", function () {
+    handleReport().catch(function (e) {
+      console.error(e);
+      setStatus("Ошибка формирования PDF: " + e.message);
+    });
+  });
+
+  importInput.addEventListener("change", function (e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    importCsvFile(file).catch(function (err) {
+      console.error(err);
+      setStatus("Ошибка импорта CSV: " + err.message);
+    }).finally(function () {
+      e.target.value = "";
+    });
+  });
+
+  [daySelect, programSelect, consentFilter, sortSelect].forEach(function (el) {
+    el.addEventListener("change", function () {
+      renderAll().catch(function (e) {
+        console.error(e);
+        setStatus("Ошибка отрисовки: " + e.message);
+      });
+    });
+  });
+
+  searchInput.addEventListener("input", function () {
+    renderAll().catch(function (e) {
+      console.error(e);
+      setStatus("Ошибка отрисовки: " + e.message);
+    });
+  });
+
+  window.addEventListener("load", function () {
+    renderAll().catch(function (e) {
+      console.error(e);
+      setStatus("Ошибка инициализации: " + e.message);
+    });
   });
 })();

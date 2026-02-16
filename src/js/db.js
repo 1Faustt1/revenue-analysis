@@ -1,207 +1,273 @@
-/* db.js — простая обёртка для IndexedDB со схемой:
-   DB: admissions, store: entries (key: `${id}_${program}`)
-   Каждый объект: {key, id, program, day, consent, priority, physics, rus, math, indiv, sum}
-*/
-(function(global){
-  const DB_NAME = 'admissions';
-  const STORE = 'entries';
+﻿(function (global) {
+  const DB_NAME = "admissions";
+  const STORE = "entries";
+  const DAY_INDEX = "day";
+  const PROGRAM_INDEX = "program";
+  const seatMap = { PM: 40, IVT: 50, ITSS: 30, IB: 20 };
+  const programs = Object.keys(seatMap);
   let db = null;
 
-  function openDB(){
-    return new Promise((resolve,reject)=>{
-      if(db) return resolve(db);
-      const req = indexedDB.open(DB_NAME,1);
-      req.onupgradeneeded = e => {
+  function openDB() {
+    return new Promise(function (resolve, reject) {
+      if (db) return resolve(db);
+
+      const req = indexedDB.open(DB_NAME, 2);
+      req.onupgradeneeded = function (e) {
         const d = e.target.result;
-        if(!d.objectStoreNames.contains(STORE)){
-          const store = d.createObjectStore(STORE,{keyPath:'key'});
-          store.createIndex('program','program',{unique:false});
-          store.createIndex('day','day',{unique:false});
+        if (d.objectStoreNames.contains(STORE)) {
+          d.deleteObjectStore(STORE);
         }
+        const store = d.createObjectStore(STORE, { keyPath: "key" });
+        store.createIndex(DAY_INDEX, DAY_INDEX, { unique: false });
+        store.createIndex(PROGRAM_INDEX, PROGRAM_INDEX, { unique: false });
       };
-      req.onsuccess = e => { db = e.target.result; resolve(db) };
-      req.onerror = e => reject(e.target.error);
+      req.onsuccess = function (e) {
+        db = e.target.result;
+        resolve(db);
+      };
+      req.onerror = function (e) {
+        reject(e.target.error);
+      };
     });
   }
 
-  // clear DB
-  function clearDB(){
-    return openDB().then(d=> new Promise((res,rej)=>{
-      const tx = d.transaction(STORE,'readwrite');
-      tx.objectStore(STORE).clear();
-      tx.oncomplete = ()=> res();
-      tx.onerror = e => rej(e.target.error);
-    }));
+  function clearDB() {
+    return openDB().then(function (d) {
+      return new Promise(function (resolve, reject) {
+        const tx = d.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).clear();
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function (e) { reject(e.target.error); };
+      });
+    });
   }
 
-  // get all entries
-  function getAll(){
-    return openDB().then(d=> new Promise((res,rej)=>{
-      const tx = d.transaction(STORE,'readonly');
-      const req = tx.objectStore(STORE).getAll();
-      req.onsuccess = ()=> res(req.result);
-      req.onerror = e=> rej(e.target.error);
-    }));
+  function getAll() {
+    return openDB().then(function (d) {
+      return new Promise(function (resolve, reject) {
+        const tx = d.transaction(STORE, "readonly");
+        const req = tx.objectStore(STORE).getAll();
+        req.onsuccess = function () { resolve(req.result || []); };
+        req.onerror = function (e) { reject(e.target.error); };
+      });
+    });
   }
 
-  // get by program
-  function getByProgram(program){
-    return openDB().then(d=> new Promise((res,rej)=>{
-      const tx = d.transaction(STORE,'readonly');
-      const idx = tx.objectStore(STORE).index('program');
-      const req = idx.getAll(IDBKeyRange.only(program));
-      req.onsuccess = ()=> res(req.result);
-      req.onerror = e => rej(e.target.error);
-    }));
+  function getByDay(day) {
+    return openDB().then(function (d) {
+      return new Promise(function (resolve, reject) {
+        const tx = d.transaction(STORE, "readonly");
+        const idx = tx.objectStore(STORE).index(DAY_INDEX);
+        const req = idx.getAll(IDBKeyRange.only(day));
+        req.onsuccess = function () { resolve(req.result || []); };
+        req.onerror = function (e) { reject(e.target.error); };
+      });
+    });
   }
 
-  // Update DB to match lists for a given day (lists = {PM:[...], IVT:[], ITSS:[], IB:[]})
-  // Implements: if DB empty -> insert all; else -> delete entries not in lists, add new, update existing (priority to latest list)
-  function updateFromLists(lists, day){
-    return openDB().then(d=> new Promise(async (res,rej)=>{
-      try{
-        // collect new keys for the provided day only
+  function toKey(day, program, id) {
+    return day + "_" + program + "_" + id;
+  }
+
+  function normalizeEntry(day, program, item) {
+    return {
+      key: toKey(day, program, item.id),
+      day: day,
+      program: program,
+      id: Number(item.id),
+      consent: Boolean(item.consent),
+      priority: Number(item.priority),
+      physics: Number(item.physics),
+      rus: Number(item.rus),
+      math: Number(item.math),
+      indiv: Number(item.indiv),
+      sum: Number(item.sum)
+    };
+  }
+
+  function updateFromLists(lists, day) {
+    return openDB().then(function (d) {
+      return new Promise(function (resolve, reject) {
+        const t0 = performance.now();
+        const tx = d.transaction(STORE, "readwrite");
+        const store = tx.objectStore(STORE);
+
         const newMap = new Map();
-        Object.keys(lists).forEach(program=>{
-          lists[program].forEach(item=>{
-            const key = `${item.id}_${program}`;
-            const obj = Object.assign({},item,{program,day,key});
-            newMap.set(key,obj);
+        programs.forEach(function (program) {
+          (lists[program] || []).forEach(function (item) {
+            const obj = normalizeEntry(day, program, item);
+            newMap.set(obj.key, obj);
           });
         });
 
-        const tx = d.transaction(STORE,'readwrite');
-        const store = tx.objectStore(STORE);
+        const idx = store.index(DAY_INDEX);
+        const req = idx.getAll(IDBKeyRange.only(day));
 
-        // read existing keys only for this day (do not touch other days)
-        const existing = await new Promise((res2,rej2)=>{
-          try{
-            const idx = store.index('day');
-            const r = idx.getAllKeys(IDBKeyRange.only(day));
-            r.onsuccess = ()=> res2(r.result);
-            r.onerror = e=> rej2(e.target.error);
-          }catch(e){
-            // fallback: read all keys and filter by day
-            const r2 = store.getAll();
-            r2.onsuccess = ()=> res2(r2.result.filter(x=> x.day === day).map(x=> x.key));
-            r2.onerror = e=> rej2(e.target.error);
-          }
-        });
+        req.onsuccess = function () {
+          const existing = req.result || [];
+          const existingKeys = new Set(existing.map(function (x) { return x.key; }));
+          const nextKeys = new Set(newMap.keys());
 
-        // Determine deletions (only keys for this day that are not present in newMap)
-        const toDelete = existing.filter(k=> !newMap.has(k));
-        const toPut = Array.from(newMap.values());
+          let deleted = 0;
+          let put = 0;
 
-        // Perform deletions
-        toDelete.forEach(k=> store.delete(k));
-        // Perform puts (will add or update)
-        toPut.forEach(o=> store.put(o));
+          existing.forEach(function (row) {
+            if (!nextKeys.has(row.key)) {
+              store.delete(row.key);
+              deleted += 1;
+            }
+          });
 
-        tx.oncomplete = ()=> res({deleted:toDelete.length,put:toPut.length});
-        tx.onerror = e => rej(e.target.error);
+          newMap.forEach(function (row) {
+            store.put(row);
+            put += 1;
+          });
 
-      }catch(err){ rej(err) }
-    }));
+          tx.oncomplete = function () {
+            const elapsed = performance.now() - t0;
+            resolve({ deleted: deleted, put: put, elapsedMs: elapsed, wasEmpty: existingKeys.size === 0 });
+          };
+        };
+
+        req.onerror = function (e) {
+          reject(e.target.error);
+        };
+
+        tx.onerror = function (e) {
+          reject(e.target.error);
+        };
+      });
+    });
   }
 
-  // Helper: compute admissions from lists for a given day (pure function, used by PDF and DB wrapper)
-  function computeFromLists(lists){
-    const seats = {PM:40,IVT:50,ITSS:30,IB:20};
-    // ensure arrays (only consenting candidates are considered for admission calculation)
-    const programs = {};
-    Object.keys(seats).forEach(p=> programs[p] = (lists[p] || []).filter(x=> x.consent).slice());
-    // sort by sum desc
-    Object.keys(programs).forEach(p=> programs[p].sort((a,b)=>b.sum - a.sum));
+  function rowsToProgramLists(rows) {
+    const lists = { PM: [], IVT: [], ITSS: [], IB: [] };
+    rows.forEach(function (r) {
+      if (!lists[r.program]) lists[r.program] = [];
+      lists[r.program].push({
+        id: r.id,
+        consent: r.consent,
+        priority: r.priority,
+        physics: r.physics,
+        rus: r.rus,
+        math: r.math,
+        indiv: r.indiv,
+        sum: r.sum
+      });
+    });
+    return lists;
+  }
 
-    // initial selection (by id)
-    const selections = {};
-    const pointers = {};
-    Object.keys(seats).forEach(p=>{
-      selections[p] = programs[p].slice(0, seats[p]).map(x=> x.id);
-      pointers[p] = selections[p].length;
+  function computeFromLists(lists) {
+    const candidateMap = new Map();
+
+    programs.forEach(function (program) {
+      (lists[program] || []).forEach(function (entry) {
+        if (!entry.consent) return;
+
+        const id = Number(entry.id);
+        if (!candidateMap.has(id)) {
+          candidateMap.set(id, {
+            id: id,
+            sum: Number(entry.sum),
+            apps: []
+          });
+        }
+
+        const c = candidateMap.get(id);
+        if (Number(entry.sum) > c.sum) c.sum = Number(entry.sum);
+        c.apps.push({ program: program, priority: Number(entry.priority), sum: Number(entry.sum) });
+      });
     });
 
-    let changed = true;
-    while(changed){
-      changed = false;
-      // map id -> selected programs
-      const assigned = {};
-      Object.keys(selections).forEach(p=>{
-        selections[p].forEach(id=>{
-          if(!assigned[id]) assigned[id]=[];
-          assigned[id].push(p);
-        });
-      });
+    const candidates = Array.from(candidateMap.values());
+    candidates.forEach(function (c) {
+      c.apps.sort(function (a, b) { return a.priority - b.priority; });
+    });
 
-      // resolve conflicts by applicant priority (lower number = higher priority)
-      Object.keys(assigned).forEach(id=>{
-        const plist = assigned[id];
-        if(plist.length<=1) return;
-        let bestP = plist[0]; let bestPr = 999;
-        plist.forEach(p=>{
-          const obj = programs[p].find(x=> x.id===id);
-          const pr = obj && obj.priority ? obj.priority : 99;
-          if(pr < bestPr){ bestPr = pr; bestP = p }
-        });
-        // remove from other programs
-        plist.forEach(p=>{ if(p!==bestP){
-          const idx = selections[p].indexOf(id);
-          if(idx>=0){ selections[p].splice(idx,1); changed=true }
-        }});
-      });
+    candidates.sort(function (a, b) {
+      if (b.sum !== a.sum) return b.sum - a.sum;
+      return a.id - b.id;
+    });
 
-      // fill vacancies
-      Object.keys(selections).forEach(p=>{
-        const arr = programs[p];
-        while(selections[p].length < seats[p] && pointers[p] < arr.length){
-          const candidate = arr[pointers[p]];
-          pointers[p]++;
-          if(!candidate) continue;
-          const id = candidate.id;
-          // skip if already assigned elsewhere
-          let already = false;
-          Object.keys(selections).forEach(op=>{ if(selections[op].includes(id)) already = true; });
-          if(!already){ selections[p].push(id); changed=true; }
+    const admittedByProgram = { PM: [], IVT: [], ITSS: [], IB: [] };
+    const admittedPriorityCount = {
+      PM: [0, 0, 0, 0],
+      IVT: [0, 0, 0, 0],
+      ITSS: [0, 0, 0, 0],
+      IB: [0, 0, 0, 0]
+    };
+
+    candidates.forEach(function (c) {
+      for (const app of c.apps) {
+        if (admittedByProgram[app.program].length < seatMap[app.program]) {
+          admittedByProgram[app.program].push({ id: c.id, sum: c.sum, priority: app.priority });
+          if (app.priority >= 1 && app.priority <= 4) {
+            admittedPriorityCount[app.program][app.priority - 1] += 1;
+          }
+          break;
         }
-      });
-    }
+      }
+    });
 
-    // Build admitted arrays and passing scores
-    const admitted = {};
+    programs.forEach(function (p) {
+      admittedByProgram[p].sort(function (a, b) {
+        if (b.sum !== a.sum) return b.sum - a.sum;
+        return a.id - b.id;
+      });
+    });
+
     const passing = {};
     const stats = {};
-    Object.keys(seats).forEach(p=>{
-      admitted[p] = selections[p].map(id=> programs[p].find(x=> x.id===id)).filter(Boolean);
-      if(admitted[p].length < seats[p]) passing[p] = 'НЕДОБОР'; else passing[p] = admitted[p][admitted[p].length-1].sum;
-      stats[p] = { totalApplications: (lists[p]||[]).length, seats: seats[p], appliedByPriority:[0,0,0,0] };
-      (lists[p]||[]).forEach(a=>{ if(a.priority>=1 && a.priority<=4) stats[p].appliedByPriority[a.priority-1]++ });
+
+    programs.forEach(function (program) {
+      const all = lists[program] || [];
+      const admitted = admittedByProgram[program];
+      passing[program] = admitted.length < seatMap[program] ? "НЕДОБОР" : admitted[seatMap[program] - 1].sum;
+
+      const appliedByPriority = [0, 0, 0, 0];
+      all.forEach(function (x) {
+        if (x.priority >= 1 && x.priority <= 4) {
+          appliedByPriority[x.priority - 1] += 1;
+        }
+      });
+
+      stats[program] = {
+        totalApplications: all.length,
+        seats: seatMap[program],
+        appliedByPriority: appliedByPriority,
+        enrolledByPriority: admittedPriorityCount[program]
+      };
     });
 
-    return {admitted, passing, stats};
+    return {
+      admitted: admittedByProgram,
+      passing: passing,
+      stats: stats
+    };
   }
 
-  // Compute admissions using generated lists (allLists is object: dayKey-> lists)
-  function computeAdmissionsFromLists(allLists, day){
-    const lists = allLists[day] || {PM:[],IVT:[],ITSS:[],IB:[]};
-    return Promise.resolve(computeFromLists(lists));
+  function computeAdmissionsForDay(day) {
+    return getByDay(day).then(function (rows) {
+      return computeFromLists(rowsToProgramLists(rows));
+    });
   }
 
-  // Compute admissions for given day — reads DB entries and uses the same logic
-  function computeAdmissionsForDay(day){
-    return openDB().then(d=> new Promise((res,rej)=>{
-      const tx = d.transaction(STORE,'readonly');
-      const idx = tx.objectStore(STORE).index('day');
-      const req = idx.getAll(IDBKeyRange.only(day));
-      req.onsuccess = ()=>{
-        const all = req.result;
-        const lists = {PM:[],IVT:[],ITSS:[],IB:[]};
-        all.forEach(a=>{ if(!lists[a.program]) lists[a.program]=[]; lists[a.program].push(a); });
-        const out = computeFromLists(lists);
-        res(out);
-      };
-      req.onerror = e=> rej(e.target.error);
-    }));
+  function computeAdmissionsFromAllRows(allRowsByDay, day) {
+    const lists = allRowsByDay[day] || { PM: [], IVT: [], ITSS: [], IB: [] };
+    return computeFromLists(lists);
   }
 
-  global.DB = { openDB, clearDB, getAll, getByProgram, updateFromLists, computeAdmissionsForDay, computeAdmissionsFromLists };
+  global.DB = {
+    openDB: openDB,
+    clearDB: clearDB,
+    getAll: getAll,
+    getByDay: getByDay,
+    updateFromLists: updateFromLists,
+    computeFromLists: computeFromLists,
+    computeAdmissionsForDay: computeAdmissionsForDay,
+    computeAdmissionsFromAllRows: computeAdmissionsFromAllRows,
+    rowsToProgramLists: rowsToProgramLists,
+    seatMap: Object.assign({}, seatMap)
+  };
 })(window);
